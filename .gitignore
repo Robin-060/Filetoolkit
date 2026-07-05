@@ -1,0 +1,49 @@
+# ========== Logs ==========
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# ========== Node / 前端 ==========
+node_modules
+dist
+dist-ssr
+*.local
+
+# ========== Rust / Tauri ==========
+# 编译产物(可达数 GB,绝对不能提交)
+src-tauri/target/
+src-tauri/Cargo.lock
+# Tauri 构建输出
+src-tauri/gen/schemas/
+
+# ========== 编辑器 / IDE ==========
+.vscode/*
+!.vscode/extensions.json
+.idea
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# ========== 操作系统 ==========
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ========== 环境与密钥 ==========
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# ========== 项目运行时数据(本地用户产生,不入库)==========
+# 应用运行产生的临时文件、缓存、日志
+.cache/
+tmp/
+*.tmp
