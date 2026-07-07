@@ -10,7 +10,10 @@ mod worker;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![commands::greet])
+        .invoke_handler(tauri::generate_handler![
+            commands::greet,
+            worker::cancel_batch,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
