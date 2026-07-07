@@ -12,6 +12,11 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             commands::greet,
+            commands::video::detect_gpu_encoders,
+            commands::video::cut_video,
+            commands::video::transcode_video,
+            commands::video::video_to_gif,
+            commands::video::extract_audio,
             common::dependency::check_dependency,
             common::dependency::check_all_dependencies,
             common::dependency::clear_dependency_cache,
