@@ -1,0 +1,7 @@
+# 根级 Cargo workspace 清单
+# 作用:让 rust-analyzer / cargo 等工具在项目根目录就能自动发现 src-tauri 下的 Rust 项目。
+# 详见:https://doc.rust-lang.org/cargo/reference/workspaces.html
+
+[workspace]
+members = ["src-tauri"]
+resolver = "2"

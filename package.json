@@ -8,7 +8,7 @@
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "lint": "eslint . --ext .ts,.vue",
+    "lint": "eslint src",
     "format": "prettier --write \"src/**/*.{ts,vue,json,css}\"",
     "rust:fmt": "cargo fmt --manifest-path src-tauri/Cargo.toml",
     "rust:clippy": "cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings",
@@ -17,13 +17,24 @@
   "dependencies": {
     "vue": "^3.5.13",
     "@tauri-apps/api": "^2",
-    "@tauri-apps/plugin-opener": "^2"
+    "@tauri-apps/plugin-opener": "^2",
+    "@element-plus/icons-vue": "^2.3.2",
+    "element-plus": "^2.14.2",
+    "pinia": "^3.0.4",
+    "vue-router": "^5.1.0"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@tauri-apps/cli": "^2",
     "@vitejs/plugin-vue": "^5.2.1",
+    "@vue/eslint-config-typescript": "^14.9.0",
+    "eslint": "^10.6.0",
+    "eslint-plugin-vue": "^10.9.2",
+    "prettier": "^3.9.4",
     "typescript": "~5.6.2",
+    "typescript-eslint": "^8.62.1",
     "vite": "^6.0.3",
-    "vue-tsc": "^2.1.10",
-    "@tauri-apps/cli": "^2"
+    "vue-eslint-parser": "^10.4.1",
+    "vue-tsc": "^2.1.10"
   }
 }

@@ -1,8 +1,8 @@
 // 批量重命名命令(M1 阶段填充)。
 // 功能规划见 docs/PRD.md §3.2.5:
-//   - 模板变量:{name} {ext} {date} {index:3} {exif.date}
-//   - 实时预览、冲突检测
-//   - 支持 Exif 拍摄日期、文件创建/修改时间作为命名来源
+//  - 模板变量 {name} {ext} {date} {index:3} {exif.date}
+//  - 实时预览、冲突检测
+//  - 支持 Exif 拍摄日期、文件创建/修改时间作为命名来源
 use chrono::prelude::*;
 use std::collections::HashSet;
 use std::path::Path;
