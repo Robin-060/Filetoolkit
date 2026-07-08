@@ -7,6 +7,8 @@ mod pipeline;
 mod worker;
 
 pub use commands::rename::{preview_rename, execute_rename};
+// C2查重命令导出
+pub use commands::dedup::{scan_duplicates, delete_duplicates};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -25,7 +27,10 @@ pub fn run() {
             common::dependency::check_dependency,
             common::dependency::check_all_dependencies,
             common::dependency::clear_dependency_cache,
-            worker::cancel_batch
+            worker::cancel_batch,
+            // C2 重复文件查重两条命令
+            scan_duplicates,
+            delete_duplicates
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

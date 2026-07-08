@@ -1,171 +1,282 @@
-<<<<<<< HEAD
 // 视频处理命令(M2 阶段填充)。
 // 功能规划见 docs/PRD.md §3.2.3:
-//   - 剪切 / 裁剪、格式转码、批量压缩(H.265)
-//   - 音频提取 / GIF 制作、字幕烧录 / 提取
-//   - 硬件加速(NVENC / QSV / VideoToolbox)
+//  - 剪切 / 裁剪、格式转码、批量压缩(H.265)
+//  - 音频提取 / GIF 制作、字幕烧录 / 提取
+//  - 硬件加速(NVENC / QSV / VideoToolbox)
 // 底层统一调用 ffmpeg 子进程。
-=======
+
 // 视频处理命令(角色 A · M2 阶段)
-//
 // 功能:剪切 / 转码 / GPU 检测 / GIF 生成 / 音频提取
 // 底层统一调用 ffmpeg 子进程,通过 tokio::spawn_blocking 避免阻塞主线程。
-
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Stdio;
-use tauri::{AppHandle, command, Emitter};
-use serde::{Serialize, Deserialize};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::io::BufRead;
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct VideoCompressRequest {
-    pub input_path: String,
-    pub output_path: String,
-    pub quality: String,
-    pub resolution: Option<String>,
-    pub fps: Option<u32>,
+use regex::Regex;
+use tauri::{AppHandle, Emitter};
+
+use crate::common::dependency;
+use crate::common::error::{AppError, AppResult};
+use crate::common::types::Progress;
+
+// ==================== 辅助函数 ====================
+fn ffmpeg_exe(base: &PathBuf) -> PathBuf {
+    base.join(if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" })
 }
 
-#[derive(Debug, Serialize)]
-pub struct VideoCompressProgress {
-    pub percent: f64,
-    pub speed: String,
-    pub eta: String,
+fn ffprobe_exe(base: &PathBuf) -> PathBuf {
+    base.join(if cfg!(windows) { "ffprobe.exe" } else { "ffprobe" })
 }
 
-#[derive(Debug, Serialize)]
-pub struct VideoCompressResult {
-    pub success: bool,
-    pub output_path: String,
-    pub original_size: u64,
-    pub compressed_size: u64,
-    pub message: String,
+fn get_video_duration(input: &str, ffmpeg_path: &PathBuf) -> AppResult<f64> {
+    let output = std::process::Command::new(ffprobe_exe(ffmpeg_path))
+        .args(["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", input])
+        .output()
+        .map_err(|e| AppError::DependencyNotFound(format!("无法运行 ffprobe: {}", e)))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stdout.trim().parse()
+        .map_err(|_| AppError::ProcessingFailed("无法解析视频时长".into()))
 }
 
-#[command]
-pub async fn compress_video(
-    app: AppHandle,
-    request: VideoCompressRequest,
-) -> Result<VideoCompressResult, String> {
-    let input = Path::new(&request.input_path);
-    let output = Path::new(&request.output_path);
-
-    if !input.exists() {
-        return Err("输入视频文件不存在".to_string());
-    }
-
-    if let Some(parent) = output.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-
-    let mut args = vec!["-i", input.to_str().ok_or("输入路径非法")?];
-
-    if let Some(resolution) = &request.resolution {
-        if resolution != "original" {
-            args.push("-vf");
-            args.push(&format!("scale={}", resolution));
-        }
-    }
-
-    if let Some(fps) = request.fps {
-        if fps > 0 {
-            args.push("-r");
-            args.push(&fps.to_string());
-        }
-    }
-
-    let crf = match request.quality.as_str() {
-        "high" => "23",
-        "medium" => "28",
-        "low" => "34",
-        _ => "28",
-    };
-
-    args.extend_from_slice(&[
-        "-c:v", "libx264",
-        "-crf", crf,
-        "-c:a", "aac",
-        "-b:a", "128k",
-        "-y",
-        output.to_str().ok_or("输出路径非法")?,
-    ]);
-
-    let mut child = tokio::process::Command::new("ffmpeg")
-        .args(&args)
-        .stderr(Stdio::piped())
-        .stdout(Stdio::null())
-        .spawn()
-        .map_err(|e| format!("启动 FFmpeg 失败：{}", e))?;
-
-    let mut stderr = child.stderr.take()
-        .ok_or("无法读取 FFmpeg 输出")?;
-
-    let app_clone = app.clone();
-    tokio::spawn(async move {
-        let mut reader = tokio::io::BufReader::new(&mut stderr);
-        let mut line = String::new();
-
-        loop {
-            line.clear();
-            match tokio::io::BufRead::read_line(&mut reader, &mut line).await {
-                Ok(0) => break,
-                Ok(_) => {
-                    let line_str = line.trim();
-                    if line_str.contains("time=") {
-                        if let Some(percent) = parse_progress_percent(line_str) {
-                            let _ = app_clone.emit("video_compress_progress", VideoCompressProgress {
-                                percent,
-                                speed: "".to_string(),
-                                eta: "".to_string(),
-                            });
-                        }
-                    }
-                }
-                Err(e) => {
-                    eprintln!("读取 FFmpeg 输出失败：{}", e);
-                    break;
-                }
-            }
-        }
-    });
-
-    let status = child.wait().await
-        .map_err(|e| format!("FFmpeg 执行失败：{}", e))?;
-
-    if !status.success() {
-        return Err("视频压缩失败，请检查 FFmpeg 日志".to_string());
-    }
-
-    let original_size = std::fs::metadata(input)
-        .map_err(|e| e.to_string())?
-        .len();
-
-    let compressed_size = std::fs::metadata(output)
-        .map_err(|e| e.to_string())?
-        .len();
-
-    Ok(VideoCompressResult {
-        success: true,
-        output_path: request.output_path,
-        original_size,
-        compressed_size,
-        message: "压缩完成".to_string(),
+fn parse_ffmpeg_time(line: &str) -> Option<f64> {
+    let re = Regex::new(r"time=(\d+):(\d+):(\d+)\.(\d+)").unwrap();
+    re.captures(line).map(|caps| {
+        let h: f64 = caps[1].parse().unwrap_or(0.0);
+        let m: f64 = caps[2].parse().unwrap_or(0.0);
+        let s: f64 = caps[3].parse().unwrap_or(0.0);
+        h * 3600.0 + m * 60.0 + s
     })
 }
 
-fn parse_progress_percent(line: &str) -> Option<f64> {
-    let time_str = line.split("time=").nth(1)?;
-    let time_str = time_str.split_whitespace().next()?;
+fn run_ffmpeg(
+    app: &AppHandle,
+    ffmpeg_path: &PathBuf,
+    args: &[String],
+    total_duration: Option<f64>,
+    cancel_flag: Arc<AtomicBool>
+) -> AppResult<(bool, String)> {
+    let mut child = std::process::Command::new(ffmpeg_exe(ffmpeg_path))
+        .args(args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| AppError::ProcessingFailed(format!("无法启动 ffmpeg: {}", e)))?;
 
-    let parts: Vec<&str> = time_str.split(':').collect();
-    if parts.len() != 3 {
-        return None;
+    let stderr = child.stderr.take()
+        .ok_or_else(|| AppError::ProcessingFailed("无法获取 ffmpeg stderr".into()))?;
+
+    let reader = std::io::BufReader::new(stderr);
+    let app_clone = app.clone();
+    let mut stderr_text = String::new();
+    let flag_inner = cancel_flag.clone();
+
+    let handle = std::thread::spawn(move || {
+        for line in reader.lines() {
+            if flag_inner.load(Ordering::SeqCst) { break; }
+            if let Ok(ref line) = line {
+                stderr_text.push_str(line);
+                stderr_text.push('\n');
+                if let Some(total) = total_duration {
+                    if let Some(current) = parse_ffmpeg_time(line) {
+                        let pct = ((current / total) * 100.0).min(99.0) as u32;
+                        let _ = app_clone.emit("task-progress", Progress {
+                            current: pct,
+                            total: 100,
+                            message: format!("处理中...({:.1}%)", pct as f64),
+                        });
+                    }
+                }
+            }
+        }
+        stderr_text
+    });
+
+    let _ = child.wait();
+    let was_cancelled = cancel_flag.load(Ordering::SeqCst);
+    if was_cancelled { let _ = child.kill(); }
+    let stderr_final = handle.join().unwrap_or_default();
+    Ok((was_cancelled, stderr_final))
+}
+
+// ==================== 编码器检测 ====================
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GpuEncoder {
+    pub name: String,
+    pub code: String,
+    pub description: String,
+}
+
+#[tauri::command]
+pub fn detect_gpu_encoders() -> Result<Vec<GpuEncoder>, String> {
+    let ffmpeg_path = dependency::require_dependency("ffmpeg").map_err(|e| e.to_string())?;
+    let output = std::process::Command::new(ffmpeg_exe(&ffmpeg_path))
+        .args(["-encoders"])
+        .output()
+        .map_err(|e| format!("无法运行 ffmpeg: {}", e))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    let patterns = &[
+        ("h264_nvenc", "NVIDIA NVENC H.264/HEVC", "h264_nvenc"),
+        ("hevc_nvenc", "NVIDIA NVENC H.265/HEVC", "hevc_nvenc"),
+        ("h264_qsv", "Intel QSV H.264", "h264_qsv"),
+        ("hevc_qsv", "Intel QSV H.265", "hevc_qsv"),
+        ("h264_videotoolbox", "Apple VideoToolbox H.264", "h264_videotoolbox"),
+        ("hevc_videotoolbox", "Apple VideoToolbox H.265/HEVC", "hevc_videotoolbox"),
+        ("h264_amf", "AMD AMF H.264", "h264_amf"),
+        ("hevc_amf", "AMD AMF H.265/HEVC", "hevc_amf"),
+    ];
+    let mut encoders = Vec::new();
+    for (code, desc, key) in patterns {
+        if stdout.contains(key) {
+            let vendor = if code.contains("nvenc") { "NVIDIA" }
+            else if code.contains("qsv") { "Intel" }
+            else if code.contains("videotoolbox") { "Apple" }
+            else if code.contains("amf") { "AMD" }
+            else { "Unknown" };
+            encoders.push(GpuEncoder {
+                name: vendor.into(),
+                code: code.to_string(),
+                description: desc.to_string(),
+            });
+        }
+    }
+    Ok(encoders)
+}
+
+// ==================== 视频剪切 ====================
+#[tauri::command]
+pub async fn cut_video(
+    app: AppHandle,
+    input: String, start: String, end: String,
+    output: String, mode: Option<String>,
+) -> Result<String, String> {
+    let ffmpeg_path = dependency::require_dependency("ffmpeg").map_err(|e| e.to_string())?;
+    let is_fast = mode.as_deref() == Some("accurate");
+    let cancel_flag = Arc::new(AtomicBool::new(false));
+
+    tokio::task::spawn_blocking(move || {
+        let mut args: Vec<String> = vec![
+            "-y".into(), "-i".into(), input,
+            "-ss".into(), start, "-to".into(), end,
+        ];
+        if is_fast { args.push("-c".into()); args.push("copy".into()); }
+        args.push(output.clone());
+
+        let (was_cancelled, _) = run_ffmpeg(&app, &ffmpeg_path, &args, None, cancel_flag.clone())
+            .map_err(|e| e.to_string())?;
+        if was_cancelled { Err("任务已取消".into()) }
+        else { Ok(format!("剪切完成: {}", output)) }
+    }).await.map_err(|e| format!("任务失败: {}", e))?
+}
+
+// ==================== 视频转码 ====================
+#[tauri::command]
+pub async fn transcode_video(
+    app: AppHandle, input: String, _output_format: String,
+    video_codec: String, crf: Option<u32>, encoder: Option<String>, output: String,
+) -> Result<String, String> {
+    let ffmpeg_path = dependency::require_dependency("ffmpeg").map_err(|e| e.to_string())?;
+    let actual_encoder = encoder.unwrap_or_else(|| match video_codec.as_str() {
+        "h264" => "libx264".into(),
+        "h265" => "libx265".into(),
+        "av1" => "libaom-av1".into(),
+        _ => "libx264".into(),
+    });
+    let crf_val = crf.unwrap_or(23);
+    let cancel_flag = Arc::new(AtomicBool::new(false));
+    let input_for_dur = input.clone();
+    let ffmpeg_for_dur = ffmpeg_path.clone();
+
+    tokio::task::spawn_blocking(move || {
+        let duration = get_video_duration(&input_for_dur, &ffmpeg_for_dur).ok();
+        let args: Vec<String> = vec![
+            "-y".into(), "-i".into(), input, "-c:v".into(), actual_encoder,
+            "-crf".into(), crf_val.to_string(), "-preset".into(), "medium".into(),
+            "-c:a".into(), "aac".into(), "-b:a".into(), "128k".into(), output,
+        ];
+        let (was_cancelled, _) = run_ffmpeg(&app, &ffmpeg_path, &args, duration, cancel_flag.clone())
+            .map_err(|e| e.to_string())?;
+        if was_cancelled { Err("任务已取消".into()) }
+        else { Ok(String::from("转码完成")) }
+    }).await.map_err(|e| format!("任务失败: {}", e))?
+}
+
+// ==================== 视频转GIF ====================
+#[tauri::command]
+pub async fn video_to_gif(
+    app: AppHandle, input: String, start: String, duration: f64,
+    fps: Option<u32>, width: Option<u32>, output: String,
+) -> Result<String, String> {
+    let ffmpeg_path = dependency::require_dependency("ffmpeg").map_err(|e| e.to_string())?;
+    let fps_val = fps.unwrap_or(10);
+    let width_val = width.unwrap_or(480);
+    let cancel_flag = Arc::new(AtomicBool::new(false));
+
+    tokio::task::spawn_blocking(move || {
+        let filter = format!(
+            "fps={},scale={}:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse",
+            fps_val, width_val
+        );
+        let args: Vec<String> = vec![
+            "-y".into(), "-ss".into(), start, "-t".into(), duration.to_string(),
+            "-i".into(), input, "-filter_complex".into(), filter, output,
+        ];
+        let (_, _) = run_ffmpeg(&app, &ffmpeg_path, &args, Some(duration), cancel_flag.clone())
+            .map_err(|e| e.to_string())?;
+        Ok(String::from("GIF 生成完成"))
+    }).await.map_err(|e| format!("任务失败: {}", e))?
+}
+
+// ==================== 提取音频 ====================
+#[tauri::command]
+pub async fn extract_audio(
+    app: AppHandle, input: String, format: String,
+    bitrate: Option<String>, output: String,
+) -> Result<String, String> {
+    let ffmpeg_path = dependency::require_dependency("ffmpeg").map_err(|e| e.to_string())?;
+    let br = bitrate.unwrap_or_else(|| "192k".into());
+    let codec = match format.as_str() {
+        "mp3" => "libmp3lame",
+        "aac" => "aac",
+        "flac" => "flac",
+        "ogg" => "libvorbis",
+        _ => "pcm_s16le", // wav default
+    }.to_string();
+    let cancel_flag = Arc::new(AtomicBool::new(false));
+
+    tokio::task::spawn_blocking(move || {
+        let mut args: Vec<String> = vec![
+            "-y".into(), "-i".into(), input, "-vn".into(),
+            "-c:a".into(), codec, "-b:a".into(), br, output,
+        ];
+        let (_, _) = run_ffmpeg(&app, &ffmpeg_path, &args, None, cancel_flag.clone())
+            .map_err(|e| e.to_string())?;
+        Ok(String::from("音频提取完成"))
+    }).await.map_err(|e| format!("任务失败: {}", e))?
+}
+
+// ==================== 单元测试 ====================
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_ffmpeg_time_valid() {
+        let r = parse_ffmpeg_time("frame=100 fps=24 time=00:01:30.50 bitrate=1000kbits/s");
+        assert!(r.is_some());
+        assert!((r.unwrap() - 90.5).abs() < 0.01);
     }
 
-    let hours: f64 = parts[0].parse().ok()?;
-    let minutes: f64 = parts[1].parse().ok()?;
-    let seconds: f64 = parts[2].split('.').next()?.parse().ok()?;
+    #[test]
+    fn test_parse_ffmpeg_time_no_match() {
+        assert!(parse_ffmpeg_time("frame=100 fps=24 bitrate=1000kbits/s").is_none());
+    }
 
-    let current = hours * 3600.0 + minutes * 60.0 + seconds;
-
-    Some(current / 600.0 * 100.0)
+    #[test]
+    fn test_parse_ffmpeg_time_hours() {
+        assert_eq!(parse_ffmpeg_time("time=02:00:00.00"), Some(7200.0));
+    }
 }
